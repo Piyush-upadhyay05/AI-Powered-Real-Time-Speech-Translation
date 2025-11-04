@@ -1,28 +1,31 @@
+# ------------------- IMPORTS -------------------
 import streamlit as st
 import azure.cognitiveservices.speech as speechsdk
 from deep_translator import GoogleTranslator
 from moviepy.editor import VideoFileClip, AudioFileClip
+from pydub import AudioSegment
 import time
 import os
 import base64
-
-import os
+import math
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# ✅ Fix for Python 3.13+ audioop removal (required by pydub)
+try:
+    import audioop
+except ModuleNotFoundError:
+    import audioop_lts as audioop
 
-# Azure Speech Configuration
+# ------------------- CONFIG -------------------
+load_dotenv()
 speech_key = os.getenv("Speech_key")
 service_region = os.getenv("Speech_region")
 
-print("Speech Key:", speech_key)  # (for testing only, remove later)
-print("Region:", service_region)
 speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=service_region)
 
 language_options = {
     "en": "English", "hi": "Hindi", "fr": "French", "de": "German",
-    "es": "Spanish", "it": "Italian", "ja": "Japanese", "ko": "Korean",
+    "es": "Spanish", "Italian": "Italian", "ja": "Japanese", "ko": "Korean",
     "ru": "Russian", "pt-PT": "Portuguese (Portugal)", "pt-BR": "Portuguese (Brazil)",
     "zh-CN": "Chinese (Simplified)", "zh-TW": "Chinese (Traditional)",
     "ar": "Arabic", "tr": "Turkish", "th": "Thai", "nl": "Dutch",
@@ -31,7 +34,7 @@ language_options = {
 
 voice_mapping = {
     "en": "en-US-AriaNeural", "hi": "hi-IN-SwaraNeural", "fr": "fr-FR-DeniseNeural",
-    "de": "de-DE-KatjaNeural", "es": "es-ES-ElviraNeural", "it": "it-IT-ElsaNeural",
+    "de": "de-DE-KatjaNeural", "es": "es-ES-ElviraNeural", "Italian": "it-IT-ElsaNeural",
     "ja": "ja-JP-NanamiNeural", "ko": "ko-KR-SunHiNeural", "ru": "ru-RU-DariyaNeural",
     "pt-PT": "pt-PT-FernandaNeural", "pt-BR": "pt-BR-FranciscaNeural",
     "zh-CN": "zh-CN-XiaoxiaoNeural", "zh-TW": "zh-TW-HsiaoChenNeural",
@@ -55,12 +58,6 @@ h1 {
     color: #FF4B2B;
     font-size: 3rem;
     text-shadow: 0px 0px 20px #FF416C;
-}
-.upload-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
 }
 .stButton>button {
     background: linear-gradient(45deg, #FF416C, #FF4B2B);
@@ -90,12 +87,12 @@ st.markdown("<h1>🎬 AI OTT Speech & Video Translator</h1>", unsafe_allow_html=
 st.markdown("<p style='text-align:center; color:#ddd;'>Upload a video, choose your language, and watch it dubbed live!</p>", unsafe_allow_html=True)
 
 # ------------------- INPUT AREA -------------------
-with st.container():
-    st.markdown("<div class='upload-container'>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("🎥 Upload your video file", type=["mp4", "mkv", "mov"])
-    st.markdown("</div>", unsafe_allow_html=True)
+uploaded_file = st.file_uploader("🎥 Upload your video file", type=["mp4", "mkv", "mov"])
 
-target_lang = st.selectbox("🌍 Choose Target Language", list(language_options.keys()), index=1)
+lang_full_names = list(language_options.values())
+default_index = lang_full_names.index("Hindi") if "Hindi" in lang_full_names else 0
+selected_lang_name = st.selectbox("🌍 Choose Target Language", lang_full_names, index=default_index)
+target_lang = next(key for key, value in language_options.items() if value == selected_lang_name)
 
 # ------------------- PROCESSING -------------------
 if uploaded_file:
@@ -113,36 +110,44 @@ if uploaded_file:
             audio_path = "extracted_audio.wav"
             video_clip.audio.write_audiofile(audio_path, verbose=False, logger=None)
 
-            # 1️⃣ Speech Recognition
-            audio_input = speechsdk.AudioConfig(filename=audio_path)
-            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_input)
-            full_text = []
+            # 1️⃣ SPEECH RECOGNITION (CHUNK BASED - NO DISPLAY)
+            start = time.time()
+            audio = AudioSegment.from_wav(audio_path)
+            chunk_length_ms = 10000  # 10 seconds
+            num_chunks = math.ceil(len(audio) / chunk_length_ms)
+            chunks = [audio[i*chunk_length_ms:(i+1)*chunk_length_ms] for i in range(num_chunks)]
 
-            def recognized_handler(evt):
-                if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
-                    full_text.append(evt.result.text)
+            full_text = ""
+            for i, chunk in enumerate(chunks):
+                chunk_filename = f"chunk_{i}.wav"
+                chunk.export(chunk_filename, format="wav")
 
-            recognizer.recognized.connect(recognized_handler)
-            recognizer.start_continuous_recognition()
-            time.sleep(video_clip.duration + 3)
-            recognizer.stop_continuous_recognition()
+                audio_input = speechsdk.AudioConfig(filename=chunk_filename)
+                recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_input)
+                result = recognizer.recognize_once_async().get()
 
-            original_text = " ".join(full_text)
+                if result.text:
+                    full_text += " " + result.text
 
+            original_text = full_text.strip()
+            # st.write(f"✅ Speech recognition completed in {round(time.time() - start, 2)}s")
+
+            # 2️⃣ TRANSLATION
             if not original_text:
                 st.error("⚠️ Could not recognize any speech. Try a clearer video.")
             else:
                 st.success("✅ Speech recognized successfully!")
+                start = time.time()
                 translated_text = GoogleTranslator(source='auto', target=target_lang).translate(original_text)
+                # st.write(f"🌍 Translation done in {round(time.time() - start, 2)}s")
 
-                # 📝 Display recognized and translated text
                 st.markdown("### 🗣️ Recognized Original Speech:")
                 st.markdown(f"<div class='box'>{original_text}</div>", unsafe_allow_html=True)
 
-                st.markdown(f"### 🌐 Translated Text ({language_options[target_lang]}):")
+                st.markdown(f"### 🌐 Translated Text → {selected_lang_name}")
                 st.markdown(f"<div class='box'>{translated_text}</div>", unsafe_allow_html=True)
 
-                # 2️⃣ Speech synthesis (Dubbed Audio)
+                # 3️⃣ SPEECH SYNTHESIS
                 dubbed_audio_path = "dubbed_output.wav"
                 voice = voice_mapping.get(target_lang, "en-US-AriaNeural")
                 speech_config.speech_synthesis_voice_name = voice
@@ -150,13 +155,13 @@ if uploaded_file:
                 synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_output)
                 synthesizer.speak_text_async(translated_text).get()
 
-                # 3️⃣ Combine dubbed audio with video
+                # 4️⃣ COMBINE AUDIO + VIDEO
                 dubbed_audio = AudioFileClip(dubbed_audio_path)
                 final_video = video_clip.set_audio(dubbed_audio)
                 output_video_path = "dubbed_video.mp4"
-                final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
+                final_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
-                # 4️⃣ Show dubbed video (auto fullscreen + autoplay)
+                # 5️⃣ DISPLAY RESULT
                 st.success("🎉 Translation & dubbing complete! Playing dubbed video below ⬇️")
                 time.sleep(1)
                 st.markdown("### 🎧 Dubbed Video Output:")
@@ -165,7 +170,6 @@ if uploaded_file:
                     video_bytes = video_file.read()
                     video_b64 = base64.b64encode(video_bytes).decode()
 
-                # --- ✅ AUTO FULLSCREEN SCRIPT ---
                 video_html = f"""
                     <video id="dubbedVideo" width="700" controls autoplay style="border-radius: 12px;">
                         <source src="data:video/mp4;base64,{video_b64}" type="video/mp4">
@@ -177,7 +181,7 @@ if uploaded_file:
                             if (video.requestFullscreen) {{
                                 video.requestFullscreen();
                             }} else if (video.webkitEnterFullscreen) {{
-                                video.webkitEnterFullscreen();  // iPhone/iPad
+                                video.webkitEnterFullscreen();
                             }} else if (video.webkitRequestFullscreen) {{
                                 video.webkitRequestFullscreen();
                             }} else if (video.msRequestFullscreen) {{

@@ -6,7 +6,7 @@ output_file = r"D:\Project Title AI-Powered Real-Time Speech Translation\venv\Da
 
 # Azure-supported languages (for both Translation + Text-to-Speech)
 language_options = {
-    "en": "English",
+    "English": "English",
     "hi": "Hindi",
     "fr": "French",
     "de": "German",
